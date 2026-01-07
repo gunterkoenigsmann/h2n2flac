@@ -16,8 +16,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: dir
-      run: ls
+    - name: update_rust
+      run:
+        - rustup self update
+        - rustup update
     - name: Build
       run: cargo build --verbose
     #- name: Run tests
