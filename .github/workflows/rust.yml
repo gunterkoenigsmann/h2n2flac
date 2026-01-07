@@ -16,10 +16,14 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: install_packages
+      run: |
+           sudo apt-get update
+           sudo apt-get install libsndfile1-dev
     - name: update_rust
       run: |
-        rustup self update
-        rustup update
+           rustup self update
+           rustup update
     - name: Build
       run: cargo build --verbose
     #- name: Run tests
