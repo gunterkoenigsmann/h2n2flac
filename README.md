@@ -23,3 +23,6 @@ surround recorder.
 This program now if given the name of one of the two stereo wav files
 produced this way combines them to a single 4-channel audio file that can
 easily processed by audio software.
+
+If only a single file is given to this program it will converted
+to a compressed format and, if that is requested, be normalized, as well.
