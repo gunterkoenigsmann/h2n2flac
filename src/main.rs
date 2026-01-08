@@ -17,8 +17,12 @@ struct Recording {
 impl Recording {
     pub fn name_xy(&self) -> &String { &self.name_xy }
     pub fn name_ms(&self) -> &String { &self.name_ms }
-    pub fn file_xy(&self) -> SndFile { return sndfile::OpenOptions::ReadOnly(ReadOptions::Auto).from_path(self.name_xy()).unwrap(); }
-    pub fn file_ms(&self) -> SndFile { return sndfile::OpenOptions::ReadOnly(ReadOptions::Auto).from_path(self.name_ms()).unwrap(); }
+    pub fn file_xy(&self) -> SndFile {
+        return sndfile::OpenOptions::ReadOnly(ReadOptions::Auto).from_path(
+            self.name_xy()).unwrap(); }
+    pub fn file_ms(&self) -> SndFile {
+        return sndfile::OpenOptions::ReadOnly(ReadOptions::Auto).from_path(
+            self.name_ms()).unwrap(); }
     pub fn outfilename(&self) -> &String { &self.outfilename }
     pub fn xy_exists(&self) -> &bool { &self.xy_exists }
     pub fn ms_exists(&self) -> &bool { &self.ms_exists }
