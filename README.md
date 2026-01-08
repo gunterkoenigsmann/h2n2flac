@@ -7,6 +7,8 @@ On ubuntu:
     sudo apt-get install libsndfile1-dev
     cargo build
 
+[![Rust](https://github.com/gunterkoenigsmann/h2n2flac/actions/workflows/rust.yml/badge.svg)](https://github.com/gunterkoenigsmann/h2n2flac/actions/workflows/rust.yml)
+
 ## What is it all about?
 
 The ZOOM H2n is a small, inexpensive but reasonable rugged recording device 
