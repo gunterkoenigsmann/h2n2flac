@@ -222,6 +222,12 @@ fn main() {
     //     };
     // }
 
+    if matches.free.len() < 1
+    {
+        print_usage(&program, opts);
+        return;        
+    }
+    
     // Rust doesn't like matches.free.for_each(move |file| h2n2flac(normalize, clip, file));
     for file in &*matches.free
     {
