@@ -89,7 +89,7 @@ impl Recording {
     }
 }
 
-fn h2n2flac_4ch(normalize: bool, file: Recording) {
+fn h2n2flac_4ch(normalize: bool, file: &Recording) {
 
     // Determine how strong to scale the audio data for normalizing the file
     let mut scale_factor: f32 = 1.0;
@@ -169,12 +169,73 @@ fn h2n2flac_4ch(normalize: bool, file: Recording) {
     }
 }
 
+fn h2n2flac_2ch(normalize: bool,
+                infilename: &String,
+                outfilename: &String) {
+
+    // Determine how strong to scale the audio data for normalizing the file
+    let mut scale_factor = 1.0;
+    if normalize
+    {
+        scale_factor = 1.0/Recording::maxval(
+            sndfile::OpenOptions::ReadOnly(ReadOptions::Auto).from_path(
+                infilename).unwrap());
+    }
+    
+    let mut infile = sndfile::OpenOptions::ReadOnly(ReadOptions::Auto).from_path(
+        infilename).unwrap();
+    let mut outfile = sndfile::OpenOptions::WriteOnly(
+        WriteOptions::new(
+            MajorFormat::FLAC,
+            SubtypeFormat::PCM_24,
+            Endian::File,
+            infile.get_samplerate(),
+            2
+        )
+    ).from_path(outfilename)
+        .expect("Failed to open file for writing");
+    
+
+    let num_frames = 8192;
+    let mut buffer  = vec![0.0f32; num_frames];
+
+    loop {
+        let n_samples: usize;
+        match infile.read_to_slice(&mut buffer) {
+            Ok(samples_read) => {
+                n_samples = samples_read;
+                for i in 0 .. samples_read
+                {
+                    buffer[i] = buffer[i] * scale_factor;
+                }
+            }
+            Err(e) => { panic!("Error reading file: {:?})", e); }
+        }
+        outfile.write_from_slice(&mut buffer)
+            .expect("Failed to write audio data");
+        if n_samples < num_frames
+        {
+            break;
+        }
+    }
+}
+
 fn h2n2flac(normalize: bool, file: Recording) {
 
     if *file.xy_exists() && *file.ms_exists()
     {
-        h2n2flac_4ch(normalize, file);
+        h2n2flac_4ch(normalize, &file);
     }    
+
+    if *file.xy_exists() && (!*file.ms_exists())
+    {
+        h2n2flac_2ch(normalize, file.name_xy(), file.outfilename());
+    }
+
+    if *file.ms_exists() && (!*file.xy_exists())
+    {
+        h2n2flac_2ch(normalize, file.name_ms(), file.outfilename());
+    }
 }
 
 fn print_usage(program: &str, opts: Options) {
