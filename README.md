@@ -6,3 +6,18 @@ On ubuntu:
 
     sudo apt-get install libsndfile1-dev
     cargo build
+
+## What is it all about?
+
+The ZOOM H2n is a small, inexpensice but reasonable rugged recording device 
+that contains two recording setups:
+ * One front-facing xy stereo recorder and
+ * One back-facing ms stereo recorder
+ .
+
+Both can produce WAV files and can be enabled at the same time making it a
+surround recorder.
+
+This program now if given the name of one of the two stereo wav files
+produced this way combines them to a single 4-channel audio file that can
+easily processed by audio software.
