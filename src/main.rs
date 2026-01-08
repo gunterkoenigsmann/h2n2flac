@@ -178,7 +178,7 @@ fn h2n2flac(normalize: bool, file: Recording) {
 }
 
 fn print_usage(program: &str, opts: Options) {
-    let brief = format!("Usage: {} FILE [options]", program);
+    let brief = format!("Usage: {} FILE(s) [options]", program);
     print!("{}", opts.usage(&brief));
 }
 
