@@ -182,6 +182,11 @@ fn print_usage(program: &str, opts: Options) {
     print!("{}", opts.usage(&brief));
 }
 
+fn print_version(program: &str) {
+    let versioninfo = format!("{} version {}", program, env!("CARGO_PKG_VERSION"));
+    print!("{}\n", (&versioninfo));
+}
+
 fn main() {
     let mut normalize: bool = false;
     let args: Vec<String> = env::args().collect();
@@ -198,6 +203,10 @@ fn main() {
     };
     if matches.opt_present("h") {
         print_usage(&program, opts);
+        return;
+    }
+    if matches.opt_present("v") {
+        print_version(&program);
         return;
     }
     if matches.opt_present("n") {
