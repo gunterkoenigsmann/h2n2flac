@@ -6,6 +6,11 @@ use std::env;
 use std::fs;
 use sndfile::*;
 
+enum OutputFormat {
+    Ogg,
+    Flac,
+}
+
 struct Recording {
     name_xy: String,
     name_ms: String,
@@ -26,10 +31,25 @@ impl Recording {
     pub fn outfilename(&self) -> &String { &self.outfilename }
     pub fn xy_exists(&self) -> &bool { &self.xy_exists }
     pub fn ms_exists(&self) -> &bool { &self.ms_exists }
+    pub fn major_format(format: &OutputFormat) -> sndfile::MajorFormat
+    {
+        return match format{            
+            OutputFormat::Ogg  => {sndfile::MajorFormat::OGG}
+            OutputFormat::Flac => {sndfile::MajorFormat::FLAC}
+        }
+    }
+    pub fn subtype_format(format: &OutputFormat) -> sndfile::SubtypeFormat
+    {
+        return match format{            
+            OutputFormat::Ogg  => {sndfile::SubtypeFormat::VORBIS}
+            OutputFormat::Flac => {sndfile::SubtypeFormat::PCM_24}
+        }
+    }
     fn new(name: &str) -> Recording {
         let filename_ms: String = name.replace("XY.WAV", "MS.WAV");
         let filename_xy: String = name.replace("MS.WAV", "XY.WAV");
         if filename_ms == filename_xy { panic!("No H2n filename found!");}
+
 
         let xy_present: bool = match fs::exists(&filename_xy) {
             Ok(x) => {x},
@@ -89,8 +109,11 @@ impl Recording {
     }
 }
 
-fn h2n2flac_4ch(normalize: bool, file: &Recording) {
-
+fn h2n2flac_4ch(normalize: bool,
+                file: &Recording,
+                format: &OutputFormat
+)
+{    
     // Determine how strong to scale the audio data for normalizing the file
     let mut scale_factor: f32 = 1.0;
     if normalize
@@ -119,8 +142,8 @@ fn h2n2flac_4ch(normalize: bool, file: &Recording) {
     }
     let mut outfile = sndfile::OpenOptions::WriteOnly(
         WriteOptions::new(
-            MajorFormat::FLAC,
-            SubtypeFormat::PCM_24,
+            Recording::major_format(format),
+            Recording::subtype_format(format),
             Endian::File,
             msfile.get_samplerate(),
             4
@@ -171,7 +194,9 @@ fn h2n2flac_4ch(normalize: bool, file: &Recording) {
 
 fn h2n2flac_2ch(normalize: bool,
                 infilename: &String,
-                outfilename: &String) {
+                outfilename: &String,
+                filetype: &OutputFormat
+) {
 
     // Determine how strong to scale the audio data for normalizing the file
     let mut scale_factor = 1.0;
@@ -184,10 +209,11 @@ fn h2n2flac_2ch(normalize: bool,
     
     let mut infile = sndfile::OpenOptions::ReadOnly(ReadOptions::Auto).from_path(
         infilename).unwrap();
+    
     let mut outfile = sndfile::OpenOptions::WriteOnly(
         WriteOptions::new(
-            MajorFormat::FLAC,
-            SubtypeFormat::PCM_24,
+            Recording::major_format(filetype),
+            Recording::subtype_format(filetype),
             Endian::File,
             infile.get_samplerate(),
             2
@@ -220,21 +246,21 @@ fn h2n2flac_2ch(normalize: bool,
     }
 }
 
-fn h2n2flac(normalize: bool, file: Recording) {
-
+fn h2n2flac(normalize: bool, file: Recording, format: &OutputFormat) {
+    
     if *file.xy_exists() && *file.ms_exists()
     {
-        h2n2flac_4ch(normalize, &file);
+        h2n2flac_4ch(normalize, &file, format);
     }    
 
     if *file.xy_exists() && (!*file.ms_exists())
     {
-        h2n2flac_2ch(normalize, file.name_xy(), file.outfilename());
+        h2n2flac_2ch(normalize, file.name_xy(), file.outfilename(), format);
     }
 
     if *file.ms_exists() && (!*file.xy_exists())
     {
-        h2n2flac_2ch(normalize, file.name_ms(), file.outfilename());
+        h2n2flac_2ch(normalize, file.name_ms(), file.outfilename(), format);
     }
 }
 
@@ -288,11 +314,21 @@ fn main() {
         print_usage(&program, opts);
         return;        
     }
+
+    let format : &OutputFormat;
+    if program.ends_with("flac")
+    {
+        format = &OutputFormat::Flac;
+    }
+    else
+    {
+        format = &OutputFormat::Ogg;
+    }
     
     // Rust doesn't like matches.free.for_each(move |file| h2n2flac(normalize, clip, file));
     for file in &*matches.free
     {
-        h2n2flac(normalize, Recording::new(file));
+        h2n2flac(normalize, Recording::new(file), format);
     }
 
 }

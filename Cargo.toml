@@ -8,3 +8,11 @@ getopts = "0.2.0"
 ndarray = "0.17.1"
 # media_info = "0.6.0"
 sndfile = "0.1.1"
+
+[[bin]]
+name = "h2n2flac"
+path = "src/main.rs"
+
+[[bin]]
+name = "h2n2ogg"
+path = "src/main.rs"
