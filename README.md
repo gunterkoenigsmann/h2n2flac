@@ -26,3 +26,10 @@ easily processed by audio software.
 
 If only a single file is given to this program it will converted
 to a compressed format and, if that is requested, be normalized, as well.
+
+## Output format
+ * FLAC, if the program name ends in "flac"
+ * OGG, if the program name ends in "ogg"
+ .
+Since cargo canot create symlinks h2n2flac and h2n2ogg are generated as
+separate binaries, currently.
