@@ -1,0 +1,54 @@
+# Continuous integration: lint, build and test every push to main and
+# every pull request.
+#
+# The file is called ci.yml because the weekly `cargo update` workflow
+# (cargo-update.yml) starts it by that name via workflow_dispatch to test
+# its pull request.
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    # sndfile links against libsndfile, so clippy needs it, too.
+    - name: Install libsndfile
+      run: |
+           sudo apt-get update
+           sudo apt-get install -y libsndfile1-dev
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+    - name: Check formatting
+      run: cargo fmt --check
+    # Every clippy warning fails the job, so that new ones get fixed
+    # while the code they are about is still fresh.
+    - name: Clippy
+      run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install libsndfile
+      run: |
+           sudo apt-get update
+           sudo apt-get install -y libsndfile1-dev
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Build
+      run: cargo build --verbose
+    - name: Run tests
+      run: cargo test --verbose
