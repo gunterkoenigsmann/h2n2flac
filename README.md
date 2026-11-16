@@ -7,7 +7,7 @@ On ubuntu:
     sudo apt-get install libsndfile1-dev
     cargo build
 
-[![Rust](https://github.com/gunterkoenigsmann/h2n2flac/actions/workflows/rust.yml/badge.svg)](https://github.com/gunterkoenigsmann/h2n2flac/actions/workflows/rust.yml)
+[![CI](https://github.com/gunterkoenigsmann/h2n2flac/actions/workflows/ci.yml/badge.svg)](https://github.com/gunterkoenigsmann/h2n2flac/actions/workflows/ci.yml)
 
 ## What is it all about?
 
@@ -33,3 +33,13 @@ to a compressed format and, if that is requested, be normalized, as well.
  .
 Since cargo canot create symlinks h2n2flac and h2n2ogg are generated as
 separate binaries, currently.
+
+## Progress bar
+While converting, a progress bar is shown on stderr, but only if stderr
+is a terminal. When the output is redirected (scripts, cron jobs, logs)
+the program stays quiet.
+
+## Development
+CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
+and `cargo test` on every pull request; running them locally before
+pushing saves a round trip.
