@@ -34,6 +34,24 @@ to a compressed format and, if that is requested, be normalized, as well.
 Since cargo canot create symlinks h2n2flac and h2n2ogg are generated as
 separate binaries, currently.
 
+## Long recordings split into several files
+The H2n ends a WAV file at about 2 GB and seamlessly continues the
+recording in a new file. h2n2flac detects such files and joins them to
+one output file, no matter which of the parts is named on the command
+line. Joining is on by default; `--no-join` converts just the named file.
+
+The parts are recognised by their Broadcast WAV metadata, not by their
+names: a file continues another one if its time reference (the position
+of its first sample in the `bext` chunk) is exactly where the other one
+ends, and if both have the same sample rate, channel count and sample
+format. In surround mode, "XY" or "MS" in the file name keeps the
+continuations of the two microphone pairs apart. Plain WAV files without
+a `bext` chunk are never joined.
+
+`h2n2flac *.WAV` converts every recording once: files that are a part of
+a recording that was already converted (a continuation, or the second
+file of an XY/MS pair) are skipped.
+
 ## Progress bar
 While converting, a progress bar is shown on stderr, but only if stderr
 is a terminal. When the output is redirected (scripts, cron jobs, logs)
