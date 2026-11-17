@@ -4,10 +4,12 @@
 //! reported by panicking, as the command line tool always did. The
 //! graphical front end catches those panics per file (see `job.rs`).
 
+use crate::join;
 use crate::progress::ProgressSink;
 use sndfile::*;
 use std::fs;
 use std::io::{self, SeekFrom};
+use std::path::Path;
 use std::time::Duration;
 
 /// Number of frames (one sample per channel) processed per read/write call.
@@ -63,20 +65,41 @@ impl OutputFormat {
 /// One recording of the H2n: the front-facing XY and/or the back-facing MS
 /// stereo file (`SR001XY.WAV`, `SR001MS.WAV`) and the name of the output
 /// file (`SR001.flac`).
+///
+/// Long recordings are split by the recorder into several files per
+/// microphone pair (see [`join`]); `xy` and `ms` list all of them in
+/// recording order. A pair that wasn't recorded has no files.
 pub struct Recording {
-    pub(crate) name_xy: String,
-    pub(crate) name_ms: String,
+    pub(crate) xy: Vec<String>,
+    pub(crate) ms: Vec<String>,
     pub(crate) outfilename: String,
-    pub(crate) xy_exists: bool,
-    pub(crate) ms_exists: bool,
+}
+
+/// The parts of the split recording `path` belongs to, in recording order,
+/// or just `path` if `join` is off (or nothing continues it).
+pub(crate) fn chain_of(path: &str, join: bool) -> Vec<String> {
+    if join {
+        join::find_chain(Path::new(path))
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    } else {
+        vec![path.to_string()]
+    }
 }
 
 impl Recording {
     /// Derives the names of both stereo files and of the output file from
-    /// the name of either stereo file.
-    pub fn new(name: &str, format: OutputFormat) -> Recording {
-        let filename_ms: String = name.replace("XY.WAV", "MS.WAV");
-        let filename_xy: String = name.replace("MS.WAV", "XY.WAV");
+    /// the name of either stereo file. `name` may be any part of a split
+    /// recording; with `join`, all parts are found.
+    pub fn new(name: &str, format: OutputFormat, join: bool) -> Recording {
+        // Only the first part of a split recording carries the H2n's name
+        // (the continuation files might be named differently), so the other
+        // pair and the output file are named after the first part.
+        let given = chain_of(name, join);
+        let first = &given[0];
+        let filename_ms: String = first.replace("XY.WAV", "MS.WAV");
+        let filename_xy: String = first.replace("MS.WAV", "XY.WAV");
         if filename_ms == filename_xy {
             panic!("No H2n filename found!");
         }
@@ -95,13 +118,31 @@ impl Recording {
         }
         let outfile: String = filename_ms.replace("MS.WAV", format.extension());
 
+        let parts = |present: bool, filename: &String| -> Vec<String> {
+            match (present, filename == first) {
+                (false, _) => Vec::new(),
+                (true, true) => given.clone(),
+                (true, false) => chain_of(filename, join),
+            }
+        };
         Recording {
-            name_xy: filename_xy,
-            name_ms: filename_ms,
-            xy_exists: xy_present,
-            ms_exists: ms_present,
+            xy: parts(xy_present, &filename_xy),
+            ms: parts(ms_present, &filename_ms),
             outfilename: outfile,
         }
+    }
+
+    /// All input files, XY first.
+    pub fn parts(&self) -> impl Iterator<Item = &String> {
+        self.xy.iter().chain(&self.ms)
+    }
+
+    /// The input files of the XY and of the MS pair that consist of more
+    /// than one part, i.e. the ones that are joined; for telling the user.
+    pub fn joined(&self) -> impl Iterator<Item = &[String]> {
+        [self.xy.as_slice(), self.ms.as_slice()]
+            .into_iter()
+            .filter(|parts| parts.len() > 1)
     }
 
     /// The name of the file the conversion writes.
@@ -124,18 +165,91 @@ pub(crate) fn frame_count(file: &mut SndFile) -> u64 {
     frames
 }
 
+/// Reads the parts of a split recording one after another, as if they were
+/// one file. A read that reaches the end of a part continues with the next
+/// one, so the joined audio has no gaps, and the buffer is always filled
+/// completely, except at the very end.
+pub(crate) struct Source {
+    paths: Vec<String>,
+    /// The index of the part `current` reads.
+    index: usize,
+    current: SndFile,
+    channels: usize,
+    samplerate: usize,
+    /// The number of frames of all parts together.
+    frames: u64,
+}
+
+impl Source {
+    /// Opens the parts `paths` (at least one), which must all have the same
+    /// channel count and sample rate.
+    pub(crate) fn open(paths: &[String]) -> Source {
+        let mut first = open_read(&paths[0]);
+        let channels = first.get_channels();
+        let samplerate = first.get_samplerate();
+        let mut frames = frame_count(&mut first);
+        for path in &paths[1..] {
+            let mut part = open_read(path);
+            if part.get_channels() != channels || part.get_samplerate() != samplerate {
+                panic!("{path} differs in format from {}!", paths[0]);
+            }
+            frames += frame_count(&mut part);
+        }
+        Source {
+            paths: paths.to_vec(),
+            index: 0,
+            current: first,
+            channels,
+            samplerate,
+            frames,
+        }
+    }
+
+    /// Starts reading from the beginning of the first part again.
+    fn rewind(&mut self) {
+        if self.index != 0 {
+            self.index = 0;
+            self.current = open_read(&self.paths[0]);
+        } else {
+            self.current
+                .seek(SeekFrom::Start(0))
+                .unwrap_or_else(|_| panic!("Cannot rewind {}", self.paths[0]));
+        }
+    }
+
+    /// Reads as many whole frames as fit into `buffer` and returns their
+    /// number; fewer only at the end of the last part.
+    fn read(&mut self, buffer: &mut [f32]) -> usize {
+        let capacity = buffer.len() / self.channels;
+        let mut filled = 0;
+        while filled < capacity {
+            // read_to_slice() returns the number of *frames* read.
+            let frames = self
+                .current
+                .read_to_slice(&mut buffer[filled * self.channels..capacity * self.channels])
+                .unwrap_or_else(|e| panic!("Error reading {}: {:?}", self.paths[self.index], e));
+            filled += frames;
+            if frames == 0 {
+                if self.index + 1 == self.paths.len() {
+                    break;
+                }
+                self.index += 1;
+                self.current = open_read(&self.paths[self.index]);
+            }
+        }
+        filled
+    }
+}
+
 /// The largest absolute sample value in `file`, reading it from the
 /// current position to the end. Advances `progress` by one unit per frame.
-pub(crate) fn maxval<P: ProgressSink>(file: &mut SndFile, progress: &mut P) -> f32 {
-    let channels = file.get_channels();
+pub(crate) fn maxval<P: ProgressSink>(file: &mut Source, progress: &mut P) -> f32 {
+    let channels = file.channels;
     let mut buffer = vec![0.0f32; CHUNK_FRAMES * channels];
     let mut maxval: f32 = 0.0;
 
     loop {
-        // read_to_slice() returns the number of *frames* read.
-        let frames: usize = file
-            .read_to_slice(&mut buffer)
-            .unwrap_or_else(|e| panic!("Error reading file: {:?}", e));
+        let frames: usize = file.read(&mut buffer);
         for sample in &buffer[..frames * channels] {
             maxval = maxval.max(sample.abs());
         }
@@ -162,16 +276,16 @@ fn h2n2flac_4ch<P: ProgressSink>(
     format: OutputFormat,
     progress: &mut P,
 ) {
-    let mut msfile = open_read(&file.name_ms);
-    let mut xyfile = open_read(&file.name_xy);
-    if msfile.get_channels() != 2 || xyfile.get_channels() != 2 {
+    let mut msfile = Source::open(&file.ms);
+    let mut xyfile = Source::open(&file.xy);
+    if msfile.channels != 2 || xyfile.channels != 2 {
         panic!("MS and XY file are expected to be stereo files!");
     }
-    if msfile.get_samplerate() != xyfile.get_samplerate() {
+    if msfile.samplerate != xyfile.samplerate {
         panic!("MS and XY file differ in sample rate!");
     }
-    let frames = frame_count(&mut msfile);
-    if frames != frame_count(&mut xyfile) {
+    let frames = msfile.frames;
+    if frames != xyfile.frames {
         panic!("MS and XY file differ in size!");
     }
     // Normalizing reads both files once more before converting them.
@@ -183,19 +297,15 @@ fn h2n2flac_4ch<P: ProgressSink>(
     if normalize {
         let peak = maxval(&mut msfile, progress).max(maxval(&mut xyfile, progress));
         scale_factor = normalize_factor(peak);
-        msfile
-            .seek(SeekFrom::Start(0))
-            .expect("Cannot rewind the MS file");
-        xyfile
-            .seek(SeekFrom::Start(0))
-            .expect("Cannot rewind the XY file");
+        msfile.rewind();
+        xyfile.rewind();
     }
 
     let mut outfile = OpenOptions::WriteOnly(WriteOptions::new(
         format.major_format(),
         format.subtype_format(),
         Endian::File,
-        msfile.get_samplerate(),
+        msfile.samplerate,
         4,
     ))
     .from_path(outfilename)
@@ -206,12 +316,10 @@ fn h2n2flac_4ch<P: ProgressSink>(
     let mut buffer_output = vec![0.0f32; CHUNK_FRAMES * 4];
 
     loop {
-        let frames_ms: usize = msfile
-            .read_to_slice(&mut buffer_ms)
-            .unwrap_or_else(|e| panic!("Error reading the MS file: {:?}", e));
-        let frames_xy: usize = xyfile
-            .read_to_slice(&mut buffer_xy)
-            .unwrap_or_else(|e| panic!("Error reading the XY file: {:?}", e));
+        // The parts of MS and XY may end at different frames; Source hides
+        // that, so the two always stay in step.
+        let frames_ms: usize = msfile.read(&mut buffer_ms);
+        let frames_xy: usize = xyfile.read(&mut buffer_xy);
         if frames_ms != frames_xy {
             panic!("MS and XY files differ in length!");
         }
@@ -232,34 +340,32 @@ fn h2n2flac_4ch<P: ProgressSink>(
     }
 }
 
-/// Converts a single file (usually a stereo file) to `format`, keeping its
-/// channel count.
+/// Converts a single file (usually a stereo file), or the parts of one, to
+/// `format`, keeping its channel count.
 fn h2n2flac_2ch<P: ProgressSink>(
     normalize: bool,
-    infilename: &str,
+    infilenames: &[String],
     outfilename: &str,
     format: OutputFormat,
     progress: &mut P,
 ) {
-    let mut infile = open_read(infilename);
-    let channels = infile.get_channels();
-    let frames = frame_count(&mut infile);
+    let mut infile = Source::open(infilenames);
+    let channels = infile.channels;
+    let frames = infile.frames;
     // Normalizing reads the file once more before converting it.
     progress.set_total(if normalize { 2 * frames } else { frames });
 
     let mut scale_factor: f32 = 1.0;
     if normalize {
         scale_factor = normalize_factor(maxval(&mut infile, progress));
-        infile
-            .seek(SeekFrom::Start(0))
-            .expect("Cannot rewind the input file");
+        infile.rewind();
     }
 
     let mut outfile = OpenOptions::WriteOnly(WriteOptions::new(
         format.major_format(),
         format.subtype_format(),
         Endian::File,
-        infile.get_samplerate(),
+        infile.samplerate,
         channels,
     ))
     .from_path(outfilename)
@@ -268,9 +374,7 @@ fn h2n2flac_2ch<P: ProgressSink>(
     let mut buffer = vec![0.0f32; CHUNK_FRAMES * channels];
 
     loop {
-        let frames: usize = infile
-            .read_to_slice(&mut buffer)
-            .unwrap_or_else(|e| panic!("Error reading file: {:?}", e));
+        let frames: usize = infile.read(&mut buffer);
         let samples = &mut buffer[..frames * channels];
         for sample in samples.iter_mut() {
             *sample *= scale_factor;
@@ -384,12 +488,12 @@ pub fn h2n2flac<P: ProgressSink>(
     let Some(part) = claim_part(&part_path, STALE_PART_AGE) else {
         return Converted::AlreadyRunning;
     };
-    match (file.xy_exists, file.ms_exists) {
-        (true, true) => h2n2flac_4ch(normalize, file, &part_path, format, progress),
-        (true, false) => h2n2flac_2ch(normalize, &file.name_xy, &part_path, format, progress),
-        (false, true) => h2n2flac_2ch(normalize, &file.name_ms, &part_path, format, progress),
+    match (file.xy.is_empty(), file.ms.is_empty()) {
+        (false, false) => h2n2flac_4ch(normalize, file, &part_path, format, progress),
+        (false, true) => h2n2flac_2ch(normalize, &file.xy, &part_path, format, progress),
+        (true, false) => h2n2flac_2ch(normalize, &file.ms, &part_path, format, progress),
         // Recording::new() refuses recordings without any file.
-        (false, false) => unreachable!(),
+        (true, true) => unreachable!(),
     }
     // The SndFile writing the part file has been dropped (and so closed) by
     // now, which Windows needs before it allows the rename.
@@ -406,7 +510,7 @@ pub(crate) mod tests {
     use std::path::{Path, PathBuf};
     use std::time::SystemTime;
 
-    const RATE: usize = 48000;
+    pub(crate) const RATE: usize = 48000;
 
     /// A fresh directory for one test. The process id keeps parallel test
     /// binaries apart.
@@ -493,13 +597,12 @@ pub(crate) mod tests {
         write_wav(&ms, 2, 10, signal);
         let name = dir.join("SR001XY.WAV").to_string_lossy().into_owned();
 
-        let rec = Recording::new(&name, OutputFormat::Ogg);
-        assert!(rec.ms_exists);
-        assert!(!rec.xy_exists);
-        assert_eq!(rec.name_ms, ms.to_string_lossy());
+        let rec = Recording::new(&name, OutputFormat::Ogg, true);
+        assert!(rec.xy.is_empty());
+        assert_eq!(rec.ms, vec![ms.to_string_lossy().into_owned()]);
         assert_eq!(rec.output(), dir.join("SR001.ogg").to_string_lossy());
 
-        let rec = Recording::new(&name, OutputFormat::Flac);
+        let rec = Recording::new(&name, OutputFormat::Flac, true);
         assert_eq!(rec.output(), dir.join("SR001.flac").to_string_lossy());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -530,7 +633,7 @@ pub(crate) mod tests {
                 0.25
             }
         });
-        let mut file = open_read(path.to_str().unwrap());
+        let mut file = Source::open(&[path.to_string_lossy().into_owned()]);
         let mut progress = quiet();
         progress.set_total(FRAMES as u64);
         assert_close(maxval(&mut file, &mut progress), 0.75, "peak");
@@ -548,7 +651,7 @@ pub(crate) mod tests {
         let dir = test_dir("stereo");
         let input = dir.join("SR002XY.WAV");
         write_wav(&input, 2, FRAMES, signal);
-        let rec = Recording::new(input.to_str().unwrap(), OutputFormat::Flac);
+        let rec = Recording::new(input.to_str().unwrap(), OutputFormat::Flac, true);
 
         let result = h2n2flac(false, &rec, OutputFormat::Flac, &mut quiet());
 
@@ -575,7 +678,7 @@ pub(crate) mod tests {
         let dir = test_dir("stereo-normalized");
         let input = dir.join("SR003MS.WAV");
         write_wav(&input, 2, FRAMES, signal);
-        let rec = Recording::new(input.to_str().unwrap(), OutputFormat::Flac);
+        let rec = Recording::new(input.to_str().unwrap(), OutputFormat::Flac, true);
 
         h2n2flac(true, &rec, OutputFormat::Flac, &mut quiet());
 
@@ -596,7 +699,7 @@ pub(crate) mod tests {
         // Different signals per file, so that a mix-up shows.
         write_wav(&ms, 2, FRAMES, |f, c| signal(f, c) * 0.5);
         write_wav(&xy, 2, FRAMES, |f, c| signal(f + 3, c) * 0.25);
-        let rec = Recording::new(xy.to_str().unwrap(), OutputFormat::Flac);
+        let rec = Recording::new(xy.to_str().unwrap(), OutputFormat::Flac, true);
 
         h2n2flac(false, &rec, OutputFormat::Flac, &mut quiet());
 
@@ -620,7 +723,7 @@ pub(crate) mod tests {
         let xy = dir.join("SR005XY.WAV");
         write_wav(&ms, 2, FRAMES, |_, _| 0.5);
         write_wav(&xy, 2, FRAMES, |_, _| 0.25);
-        let rec = Recording::new(ms.to_str().unwrap(), OutputFormat::Flac);
+        let rec = Recording::new(ms.to_str().unwrap(), OutputFormat::Flac, true);
 
         h2n2flac(true, &rec, OutputFormat::Flac, &mut quiet());
 
@@ -638,7 +741,7 @@ pub(crate) mod tests {
         let dir = test_dir("progress");
         let input = dir.join("SR006XY.WAV");
         write_wav(&input, 2, FRAMES, signal);
-        let rec = Recording::new(input.to_str().unwrap(), OutputFormat::Flac);
+        let rec = Recording::new(input.to_str().unwrap(), OutputFormat::Flac, true);
         let mut progress = Progress::new("p", Some(Vec::new()));
 
         h2n2flac(true, &rec, OutputFormat::Flac, &mut progress);
@@ -664,7 +767,7 @@ pub(crate) mod tests {
         let dir = test_dir("busy");
         let input = dir.join("SR007XY.WAV");
         write_wav(&input, 2, 100, signal);
-        let rec = Recording::new(input.to_str().unwrap(), OutputFormat::Flac);
+        let rec = Recording::new(input.to_str().unwrap(), OutputFormat::Flac, true);
         let part = part_name(rec.output());
         fs::write(&part, b"being written").unwrap();
 
@@ -682,7 +785,7 @@ pub(crate) mod tests {
         let dir = test_dir("stale");
         let input = dir.join("SR008XY.WAV");
         write_wav(&input, 2, 100, signal);
-        let rec = Recording::new(input.to_str().unwrap(), OutputFormat::Flac);
+        let rec = Recording::new(input.to_str().unwrap(), OutputFormat::Flac, true);
         let part = part_name(rec.output());
         fs::write(&part, b"left over").unwrap();
         age_file(&part, STALE_PART_AGE + Duration::from_secs(10));
@@ -714,7 +817,7 @@ pub(crate) mod tests {
         let xy = dir.join("SR009XY.WAV");
         write_wav(&ms, 2, 100, signal);
         write_wav(&xy, 2, 99, signal);
-        let rec = Recording::new(ms.to_str().unwrap(), OutputFormat::Flac);
+        let rec = Recording::new(ms.to_str().unwrap(), OutputFormat::Flac, true);
 
         let result = std::panic::catch_unwind(|| {
             h2n2flac(false, &rec, OutputFormat::Flac, &mut quiet());
@@ -723,6 +826,139 @@ pub(crate) mod tests {
         assert!(result.is_err(), "differing lengths must be refused");
         assert!(!Path::new(rec.output()).exists());
         assert!(!Path::new(&part_name(rec.output())).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A path as the String the program gets on its command line.
+    pub(crate) fn arg(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    /// Writes `signal` (scaled by `gain`, shifted by `offset` frames) split
+    /// into BWF files of `lengths` frames each that start at time reference
+    /// `start` and continue each other seamlessly.
+    pub(crate) fn write_split(
+        dir: &Path,
+        names: &[&str],
+        lengths: &[usize],
+        start: u64,
+        gain: f32,
+        offset: usize,
+    ) {
+        let mut first_frame = 0;
+        for (name, &frames) in names.iter().zip(lengths) {
+            join::write_bwf(
+                &dir.join(name),
+                2,
+                RATE as u32,
+                frames,
+                Some(start + first_frame as u64),
+                |f, c| signal(first_frame + f + offset, c) * gain,
+            );
+            first_frame += frames;
+        }
+    }
+
+    // Part lengths that end inside a CHUNK_FRAMES block, so that reads
+    // have to continue across file boundaries.
+    pub(crate) const PARTS: [usize; 3] = [CHUNK_FRAMES + 100, 777, CHUNK_FRAMES + 5];
+
+    #[test]
+    fn split_stereo_recording_is_joined_seamlessly() {
+        let dir = test_dir("split-stereo");
+        // The continuation files are deliberately named unlike the first
+        // one: only the time reference connects them.
+        write_split(
+            &dir,
+            &["SR010XY.WAV", "SR011XY.WAV", "ZZZ-XY.WAV"],
+            &PARTS,
+            4800,
+            1.0,
+            0,
+        );
+        // An unrelated recording that starts later must stay out.
+        join::write_bwf(
+            &dir.join("SR012XY.WAV"),
+            2,
+            RATE as u32,
+            10,
+            Some(10_000_000),
+            signal,
+        );
+        let total: usize = PARTS.iter().sum();
+
+        // Naming a middle part converts the whole recording.
+        let rec = Recording::new(&arg(&dir.join("SR011XY.WAV")), OutputFormat::Flac, true);
+        assert_eq!(rec.outfilename, arg(&dir.join("SR010.flac")));
+        assert_eq!(rec.xy.len(), 3);
+        h2n2flac(false, &rec, OutputFormat::Flac, &mut quiet());
+
+        let (channels, data) = read_all(&rec.outfilename);
+        assert_eq!(channels, 2);
+        assert_eq!(data.len(), total * 2);
+        // Every frame, so that a lost or doubled frame at a seam shows.
+        for f in 0..total {
+            for c in 0..2 {
+                assert_close(
+                    data[f * 2 + c],
+                    signal(f, c),
+                    &format!("frame {f} channel {c}"),
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn split_surround_recording_is_joined_and_normalized_as_a_whole() {
+        let dir = test_dir("split-surround");
+        let total: usize = PARTS.iter().sum();
+        // MS and XY are split at different frames, which mustn't put them
+        // out of step.
+        let xy_parts = [CHUNK_FRAMES * 2, total - CHUNK_FRAMES * 2];
+        write_split(
+            &dir,
+            &["SR020MS.WAV", "SR021MS.WAV", "SR022MS.WAV"],
+            &PARTS,
+            0,
+            0.5,
+            0,
+        );
+        write_split(&dir, &["SR020XY.WAV", "SR021XY.WAV"], &xy_parts, 0, 0.25, 3);
+
+        let rec = Recording::new(&arg(&dir.join("SR020XY.WAV")), OutputFormat::Flac, true);
+        assert_eq!(rec.ms.len(), 3);
+        assert_eq!(rec.xy.len(), 2);
+        h2n2flac(true, &rec, OutputFormat::Flac, &mut quiet());
+
+        let (channels, data) = read_all(&rec.outfilename);
+        assert_eq!(channels, 4);
+        assert_eq!(data.len(), total * 4);
+        // The peak (0.25, in the MS file) is scaled to full scale: the
+        // peak of all parts counts, not that of the first one.
+        for f in 0..total {
+            let what = format!("frame {f}");
+            assert_close(data[f * 4], signal(f, 0) * 0.5 * 4.0, &what);
+            assert_close(data[f * 4 + 1], signal(f, 1) * 0.5 * 4.0, &what);
+            assert_close(data[f * 4 + 2], signal(f + 3, 0) * 0.25 * 4.0, &what);
+            assert_close(data[f * 4 + 3], signal(f + 3, 1) * 0.25 * 4.0, &what);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_join_converts_only_the_named_part() {
+        let dir = test_dir("no-join");
+        write_split(
+            &dir,
+            &["SR030XY.WAV", "SR031XY.WAV"],
+            &PARTS[..2],
+            0,
+            1.0,
+            0,
+        );
+        let rec = Recording::new(&arg(&dir.join("SR030XY.WAV")), OutputFormat::Flac, false);
+        assert_eq!(rec.xy, vec![arg(&dir.join("SR030XY.WAV"))]);
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -60,6 +60,11 @@ fn main() -> ExitCode {
         "uninstall-menu",
         "Remove the entries --install-menu added",
     );
+    opts.optflag(
+        "",
+        "no-join",
+        "Don't join recordings the recorder split into several files",
+    );
     //    opts.optflagopt("c", "clip", "Allow clipping of n permille of the samples", "CLIP_PERCENTAGE");
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
@@ -99,11 +104,17 @@ fn main() -> ExitCode {
 
     let format = OutputFormat::from_program_name(&program);
 
-    // `h2n2flac *.WAV` names every recording twice (MS and XY file).
-    for file in selection::unique_recordings(&matches.free) {
+    let join = !matches.opt_present("no-join");
+
+    // `h2n2flac *.WAV` names every recording twice (MS and XY file), and
+    // a split recording once per part.
+    for file in selection::unique_recordings(&matches.free, join) {
+        let recording = Recording::new(&file, format, join);
+        for parts in recording.joined() {
+            eprintln!("Joining {}", parts.join(" + "));
+        }
         // The bar appears only if stderr is a terminal.
-        let mut progress = Progress::on_stderr(&file);
-        let recording = Recording::new(&file, format);
+        let mut progress = Progress::on_stderr(recording.output());
         if h2n2flac(normalize, &recording, format, &mut progress) == Converted::AlreadyRunning {
             eprintln!(
                 "Skipping {file}: {} is being written by another process.",

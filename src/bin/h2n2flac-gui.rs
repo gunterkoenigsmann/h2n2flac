@@ -121,7 +121,9 @@ fn main() -> ExitCode {
         OutputFormat::Flac
     };
 
-    let files = selection::unique_recordings(&matches.free);
+    // Split recordings are always joined (see job::run_jobs), so the
+    // selection is deduplicated the same way.
+    let files = selection::unique_recordings(&matches.free, true);
     let shared = Shared::new(&files);
     job::quiet_worker_panics();
     let worker_shared = shared.clone();

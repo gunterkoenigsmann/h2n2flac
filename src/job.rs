@@ -202,7 +202,9 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 /// Converts one file, turning panics into an [`Outcome`].
 fn run_job(shared: &Shared, file: &str, normalize: bool, format: OutputFormat) -> Outcome {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        let recording = Recording::new(file, format);
+        // The right-click menu has no options, so split recordings are
+        // always joined, as the command line tool does by default.
+        let recording = Recording::new(file, format, true);
         let mut progress = JobProgress {
             shared,
             total: 0,

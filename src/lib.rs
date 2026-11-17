@@ -9,5 +9,6 @@
 pub mod convert;
 pub mod integration;
 pub mod job;
+pub mod join;
 pub mod progress;
 pub mod selection;
