@@ -52,3 +52,42 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+
+  # The graphical front end (h2n2flac-gui) is behind the `gui` feature
+  # because wxDragon compiles wxWidgets from source, which takes several
+  # minutes. This job lints and tests it, and runs it once on a virtual
+  # display to see that it converts and closes its window by itself.
+  gui:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install libsndfile, GTK and the wxWidgets build tools
+      run: |
+           sudo apt-get update
+           sudo apt-get install -y libsndfile1-dev libgtk-3-dev cmake \
+                libclang-dev libpng-dev libjpeg-dev libgl1-mesa-dev \
+                libglu1-mesa-dev libxkbcommon-dev libexpat1-dev \
+                libtiff-dev xvfb
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+    - name: Clippy
+      run: cargo clippy --all-targets --features gui -- -D warnings
+    - name: Build
+      run: cargo build --features gui
+    - name: Run tests
+      run: cargo test --features gui
+    - name: Convert a recording through the window
+      run: |
+           mkdir smoke
+           python3 - <<'PY'
+           import struct, wave
+           with wave.open("smoke/SR001XY.WAV", "wb") as w:
+               w.setnchannels(2); w.setsampwidth(2); w.setframerate(48000)
+               w.writeframes(struct.pack("<hh", 1000, -1000) * 48000 * 5)
+           PY
+           # The window closes by itself on success; the timeout catches
+           # a window that doesn't.
+           timeout 120 xvfb-run -a target/debug/h2n2flac-gui smoke/SR001XY.WAV
+           test -s smoke/SR001.flac
+           test ! -e smoke/SR001.flac.part

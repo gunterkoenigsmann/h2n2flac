@@ -57,7 +57,62 @@ While converting, a progress bar is shown on stderr, but only if stderr
 is a terminal. When the output is redirected (scripts, cron jobs, logs)
 the program stays quiet.
 
+Giving both files of a recording (`h2n2flac *.WAV`) converts it once.
+
+The output is written to `SR001.flac.part` first and renamed when it is
+complete, so an interrupted conversion never leaves a truncated
+`SR001.flac`. A `.part` file that is still being written tells a second
+h2n2flac to leave that recording alone; one that hasn't changed for two
+minutes is a leftover and gets replaced.
+
+## Right-click menu with a progress window
+`h2n2flac-gui` converts like `h2n2flac`, but shows its progress in a
+window (made with [wxDragon](https://crates.io/crates/wxdragon)). The
+window closes by itself when all went well, and stays open listing the
+files that failed otherwise. *Cancel* stops and removes the half-written
+file. Options: `--ogg` for Ogg Vorbis instead of FLAC, `-n` to normalize.
+Recordings the H2n split into several files are always joined, as
+described above.
+
+It isn't built by default, because wxDragon compiles wxWidgets from
+source, which takes a few minutes and needs a few more packages:
+
+    sudo apt-get install libsndfile1-dev libgtk-3-dev cmake libclang-dev
+    cargo build --release --features gui
+
+Then
+
+    target/release/h2n2flac --install-menu
+
+adds a submenu "H2n recording" with *Convert to FLAC*, *Convert to Ogg
+Vorbis* and normalized variants of both to the right-click menu of WAV
+files in
+
+ * Dolphin (KDE Plasma 5.85 or newer):
+   `~/.local/share/kio/servicemenus/h2n2flac.desktop`
+ * GNOME Files (Nautilus) and Nemo, under *Scripts*:
+   `~/.local/share/{nautilus,nemo}/scripts/H2n recording/`
+ * Windows Explorer: registry entries below
+   `HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.wav`.
+   On Windows 11 they are under *Show more options*.
+
+Nothing needs administrator rights. The entries point to the
+`h2n2flac-gui` next to the `h2n2flac` that installed them; after moving the
+programs, run `--install-menu` again. `h2n2flac --uninstall-menu` removes
+the entries.
+
+Dolphin, Nautilus and Nemo start one window for all selected files.
+Windows Explorer starts one per file; if several files of a recording are
+selected (both microphone pairs, or several parts of a split recording),
+all windows but one see that another one is converting it and close.
+
 ## Development
 CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
 and `cargo test` on every pull request; running them locally before
-pushing saves a round trip.
+pushing saves a round trip. A separate job does the same with
+`--features gui` and converts a file through the window on a virtual
+display (`xvfb-run`).
+
+The conversion lives in a library (`src/lib.rs`); `src/main.rs` and
+`src/bin/h2n2flac-gui.rs` are thin front ends. `src/job.rs` holds all of
+the window's logic except the drawing, so it is tested without a display.

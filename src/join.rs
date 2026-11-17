@@ -23,7 +23,7 @@
 //! the file name, as in `SR001XY.WAV`.
 //!
 //! Only the headers of the files are read here; joining the audio data is
-//! done by `Source` in `main.rs`.
+//! done by `Source` in `convert.rs`.
 
 use std::fs::{self, File};
 use std::io::{self, BufReader, ErrorKind, Read, Seek, SeekFrom};

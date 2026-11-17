@@ -9,6 +9,33 @@
 
 use std::io::{self, IsTerminal, Write};
 
+/// Something that is told how far a conversion has got.
+///
+/// The conversion functions only report progress through this trait, so
+/// that the same code can drive the terminal bar ([`Progress`]) and the
+/// window of the graphical front end (`job::JobProgress`).
+pub trait ProgressSink {
+    /// Sets the amount of work that corresponds to 100%.
+    fn set_total(&mut self, total: u64);
+    /// Records that `units` more units of work are done.
+    fn advance(&mut self, units: u64);
+    /// Marks the work as complete.
+    fn finish(&mut self);
+}
+
+impl<W: Write> ProgressSink for Progress<W> {
+    // Inherent methods take precedence, so these calls don't recurse.
+    fn set_total(&mut self, total: u64) {
+        Progress::set_total(self, total);
+    }
+    fn advance(&mut self, units: u64) {
+        Progress::advance(self, units);
+    }
+    fn finish(&mut self) {
+        Progress::finish(self);
+    }
+}
+
 /// Width of the bar itself, in characters, without label and percentage.
 const BAR_WIDTH: usize = 30;
 
